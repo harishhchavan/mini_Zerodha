@@ -10,28 +10,40 @@ import scala.util.{Failure, Success, Try}
 
 object Ordering extends Logg {
 
-  def addOrder(connection: Connection): Unit = {
+  def addBuyOrder(connection: Connection): Unit = {
 
-    val order = Try {
-      println("OrderId company BUY/SELL quantity price")
-      val input = readLine().split(" ")
+    val buyOrder = Try {
+      println("OrderId: ")
+      val orderId = readLine().toInt
 
-      require(input.length == 5, "Invalid order format")
+      println("UserId: ")
+      val userId = readLine().toInt
 
-      val order = Orders(
-        input(0).toInt,
-        input(1),
-        input(2),
-        input(3).toInt,
-        input(3).toInt, //initially, same remaining Quantity
-        input(4).toDouble
+      println("StockId: ")
+      val stockId = readLine().toInt
+
+      //BUY
+
+      println("Quantity: ")
+      val quantity = readLine().toInt
+
+      println("Price: ")
+      val price = readLine().toDouble
+
+      val buyOrder = Orders(
+        orderId,
+        userId,
+        stockId,
+        "BUY",
+        quantity,
+        price
       )
 
       //returning order ...Try[order]
-      order
+      buyOrder
     }
 
-    order match {
+    buyOrder match {
       case Success(order) =>
         insertOrder(connection, order)
         tryMatch(connection, order)
@@ -41,17 +53,64 @@ object Ordering extends Logg {
   }
 
 
-//--------------------------------------------------------------------------------------------------------------------
+  //--------------------------------------------------------------------------------------------------------------------
 
-  private def insertOrder(conn: Connection, order: Orders): Unit = {
+
+  def addSellOrder(connection: Connection): Unit = {
+
+    val sellOrder = Try {
+      println("OrderId: ")
+      val orderId = readLine().toInt
+
+      println("UserId: ")
+      val userId = readLine().toInt
+
+      println("StockId: ")
+      val stockId = readLine().toInt
+
+      //SELL
+
+      println("Quantity: ")
+      val quantity = readLine().toInt
+
+      println("Price: ")
+      val price = readLine().toDouble
+
+      val buyOrder = Orders(
+        orderId,
+        userId,
+        stockId,
+        "SELL",
+        quantity,
+        price
+      )
+
+      //returning order ...Try[order]
+      buyOrder
+    }
+
+    sellOrder match {
+      case Success(order) =>
+        insertOrder(connection, order)
+        tryMatch(connection, order)
+
+      case Failure(e) => logger.error("Order input error", e)
+    }
+  }
+
+  //--------------------------------------------------------------------------------------------------------------------
+
+
+  private def insertOrder(conn: Connection, party: Orders): Unit = {
+
     Try {
       val ps = conn.prepareStatement(Queries.INSERT_INTO_ORDER)
-      ps.setInt(1, order.orderId)
-      ps.setString(2, order.company)
-      ps.setString(3, order.orderType)
-      ps.setInt(4, order.quantity)
-      ps.setInt(5, order.rem_Quantity) //initial quantity
-      ps.setDouble(6, order.price)
+      ps.setInt(1, party.userId)
+      ps.setInt(2, party.stockId)
+      ps.setString(3, party.buyOrSell)
+      ps.setInt(4, party.quantity)
+      ps.setDouble(5, party.price)
+      ps.setString(6, "Available")
 
       ps.executeUpdate()
       ps.close()
@@ -59,91 +118,121 @@ object Ordering extends Logg {
     }.recover {
       case e: Exception => logger.error("Failed to Insert Order!", e)
     }
-
   }
 
 
   //--------------------------------------------------------------------------------------------------------------------
 
 
-  private def tryMatch(conn: Connection, incoming: Orders): Unit = {
+  private def tryMatch(conn: Connection, party: Orders): Unit = {
 
     val update = Try {
       val sql =
-        if (incoming.orderType == "BUY") Queries.SELECT_WHERE_SELL
+        if (party.buyOrSell == "BUY") Queries.SELECT_WHERE_SELL
         else Queries.SELECT_WHERE_BUY
 
       val preparedStatement = conn.prepareStatement(sql)
-      preparedStatement.setString(1, incoming.company)
-      preparedStatement.setDouble(2, incoming.price)
+      preparedStatement.setInt(1, party.stockId)
+      preparedStatement.setDouble(2, party.price)
 
       val rs = preparedStatement.executeQuery()
 
       if (rs.next()) {
-        val matchedOrderId = rs.getInt("OrderId")
-        val matchedPrice = rs.getDouble("Price")
-        val matchedQty = rs.getInt("Remaining_Quantity")
+        val counterPartyOrderId = rs.getInt("OrderId")
+        val counterPartyOrderQuantity = rs.getInt("Quantity")
+        val tradedQty = Math.min(party.quantity, counterPartyOrderQuantity)
 
-        val used_qty = Math.min(incoming.quantity, matchedQty)
 
-        insertTrade(conn, incoming, matchedOrderId, matchedPrice, used_qty)
-
-        updateOrders(conn, matchedOrderId, matchedQty-used_qty)
-        updateOrders(conn, incoming.orderId, incoming.quantity - used_qty)
-
-        logger.info(s"Trade executed for quantity = $used_qty")
+        Try {
+          updateOrders(conn, party, counterPartyOrderId, tradedQty)
+        } match {
+          case Success(_) =>
+            insertTrade(conn, party, counterPartyOrderId, tradedQty)
+        }
 
       } else {
-         logger.error("No matching order found!!")
+        logger.error("No matching order found!!")
       }
       rs.close()
       preparedStatement.close()
     }
 
-    update match{
-      case Success(_) => logger.info("matching completed successfuly")
+    update match {
+      case Success(_) => logger.info("matching completed successfully")
+      case Failure(e) => logger.error("Error while matching order", e)
+    }
+  }
 
-      case Failure(e) => logger.error("Error while matching order",e)
+  //--------------------------------------------------------------------------------------------------------------------
 
+  private def updateOrders(conn: Connection, party: Orders, counterPartyOrderId: Int, tradedQty: Int): Unit = {
+
+    var count = 0
+
+    val tCount = Try {
+      if (party.buyOrSell == "BUY") {
+        val preparedStatement1 = conn.prepareStatement(Queries.UPDATE_ORDER_PARTY)
+        preparedStatement1.setInt(1, party.quantity + tradedQty)
+        preparedStatement1.setString(2, "Completed")
+        preparedStatement1.setInt(3, party.orderId)
+        preparedStatement1.executeUpdate()
+        count += 1
+
+        val preparedStatement2 = conn.prepareStatement(Queries.UPDATE_ORDER_COUNTERPARTY)
+        preparedStatement2.setInt(1, party.quantity - tradedQty)
+        preparedStatement2.setString(2, "Full/Part")
+        preparedStatement2.setInt(3, counterPartyOrderId)
+        preparedStatement2.executeUpdate()
+        count += 1
+
+      }
+      else if (party.buyOrSell == "SELL") {
+        val preparedStatement1 = conn.prepareStatement(Queries.UPDATE_ORDER_PARTY)
+        preparedStatement1.setInt(1, party.quantity - tradedQty)
+        preparedStatement1.setString(2, "Completed")
+        preparedStatement1.setInt(3, party.orderId)
+        preparedStatement1.executeUpdate()
+        count += 1
+
+        val preparedStatement2 = conn.prepareStatement(Queries.UPDATE_ORDER_COUNTERPARTY)
+        preparedStatement2.setInt(1, party.quantity + tradedQty)
+        preparedStatement2.setString(2, "Full/Part")
+        preparedStatement2.setInt(3, counterPartyOrderId)
+        preparedStatement2.executeUpdate()
+        count += 1
+
+
+      } else {
+        logger.info("Something went wrong!!!!!!")
+      }
+
+      count
+    }
+
+    tCount match {
+
+      case Failure(e) => logger.error("Failed to update rows in Order table!")
     }
   }
 
 
   //--------------------------------------------------------------------------------------------------------------------
 
-  private def insertTrade(connection: Connection, incoming: Orders, matchedOrderId: Int, price: Double, used_qty: Int): Unit = {
+  private def insertTrade(connection: Connection, party: Orders, counterPartyOrderId: Int, tradedQty: Int): Unit = {
 
-    val (buyId, sellId) = if (incoming.orderType == "BUY") (incoming.orderId, matchedOrderId)
-                          else(matchedOrderId, incoming.orderId)
 
     val preparedStatement = connection.prepareStatement(Queries.INSERT_INTO_TRADE)
-    preparedStatement.setInt(1, buyId)
-    preparedStatement.setInt(2, sellId)
-    preparedStatement.setString(3, incoming.company)
-    preparedStatement.setDouble(4, price)
-    preparedStatement.setInt(5, used_qty)
+    //tradeId
+    preparedStatement.setInt(1, party.orderId)
+    preparedStatement.setInt(2, counterPartyOrderId)
+    preparedStatement.setInt(3, party.stockId)
+    preparedStatement.setDouble(4, party.price)
+    preparedStatement.setInt(5, tradedQty)
     preparedStatement.executeUpdate()
     preparedStatement.close()
 
     logger.info("Trade inserted into Trade table.")
 
-    updateOrders(connection, incoming.orderId, used_qty)
-    updateOrders(connection, matchedOrderId, used_qty)
   }
 
-
-  //--------------------------------------------------------------------------------------------------------------------
-
- private def updateOrders(conn: Connection, orderId: Int, used_qty: Int ): Unit = {
-
-   Try {
-     val preparedStatement = conn.prepareStatement(Queries.UPDATE_ORDER_REMAINING_QUANTITY)
-     preparedStatement.setInt(1, used_qty)
-     preparedStatement.setInt(2, orderId)
-     preparedStatement.executeUpdate()
-
-   }.recover {
-     case e => logger.error("Remaining quantities update failed", e)
-   }
- }
 }

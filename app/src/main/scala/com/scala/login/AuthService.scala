@@ -42,21 +42,20 @@ object AuthService extends Logg {
       val rs = ps.executeQuery()
 
       if (rs.next()) {
-
         val dbPassword = rs.getString("UserPassword")
+        val dbUserName = rs.getString("UserName")
 
         println("Enter the Password: ")
         val password = readLine().trim()
 
         if (password == dbPassword) {
           logger.info("LOGIN SUCCESSFUL!")
-          Dashboard.showDashboard(conn) //upon successful login.
+          Dashboard.showDashboard(conn, dbUserName)
         }
         else {
           logger.error("Invalid Password!")
         }
       } else {
-        println()
         println("You need to SIGNUP first!")
         signup(conn: Connection)
       }
